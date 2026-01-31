@@ -1,0 +1,31 @@
+{
+  "name": "flight-tracker-service",
+  "version": "1.0.0",
+  "description": "Mac-based flight tracker service that displays nearby flights on AWTRIX clock and publishes to GitHub Pages",
+  "main": "tracker.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node tracker.mjs",
+    "dev": "node tracker.mjs",
+    "sync": "./sync-to-pages.sh",
+    "enrich": "node enrich-history.mjs"
+  },
+  "keywords": [
+    "flight-tracker",
+    "adsb",
+    "aviation",
+    "awtrix",
+    "flightradar24"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jackwallner/flight-tracker-service.git"
+  }
+}

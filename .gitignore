@@ -1,0 +1,26 @@
+# Logs
+*.log
+*.error.log
+npm-debug.log*
+
+# Runtime data
+flights.json
+flights-web.json
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
