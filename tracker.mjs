@@ -31,6 +31,37 @@ let lastNotifiedCallsign = null; // Track last flight we notified
 let lastFlightSeen = null; // Timestamp when we last saw any flight
 
 /**
+ * Get best callsign - use registration if callsign is invalid
+ * This handles FR24 data errors where callsign is missing/wrong
+ */
+function getBestCallsign(flight) {
+  const callsign = flight.callsign?.trim().toUpperCase();
+  const registration = flight.registration?.trim().toUpperCase();
+  const aircraftType = flight.aircraftType?.trim().toUpperCase();
+  
+  // Valid callsign checks
+  const isValid = (cs) => {
+    if (!cs || cs.length < 3) return false;
+    if (!/^[A-Z]/.test(cs)) return false;
+    if (/^\d+$/.test(cs)) return false;
+    // Reject if matches aircraft type
+    if (aircraftType && cs === aircraftType) return false;
+    // Reject known aircraft types
+    const badTypes = ['PC12', 'DA42', 'DA62', 'PA28', 'PA32', 'C172', 'C182', 'C206', 'C210', 'C310', 'C414', 'C421', 'BE36', 'BE58', 'BE20', 'SR20', 'SR22', 'C25A', 'C25B', 'C56X', 'E50P', 'E55P', 'FA50', 'G100', 'G200', 'TBM7', 'TBM8', 'TBM9'];
+    if (badTypes.includes(cs)) return false;
+    return true;
+  };
+  
+  // Use registration if available and valid
+  const isValidReg = (reg) => reg && /^N[0-9A-Z]+$/.test(reg);
+  
+  // Priority: valid callsign > valid registration > original callsign
+  if (isValid(callsign)) return callsign;
+  if (isValidReg(registration)) return registration;
+  return callsign || registration || 'UNKNOWN';
+}
+
+/**
  * Load existing flight history from file
  */
 function loadFlightHistory() {
@@ -130,6 +161,17 @@ function exportWebData(flightJustLeft = false) {
                          closestFlight.aircraftType || 
                          closestFlight.type || null;
     
+    // Fix bad callsigns using registration if available
+    const bestCallsign = getBestCallsign({
+      callsign: closestFlight.callsign,
+      registration: closestFlight.registration,
+      aircraftType: aircraftType
+    });
+    if (bestCallsign !== closestFlight.callsign) {
+      console.log(`📝 Fixed web export callsign: ${closestFlight.callsign || '(empty)'} → ${bestCallsign}`);
+      closestFlight.callsign = bestCallsign;
+    }
+    
     // Get firstSeen time for takeoff display
     const historyEntry = flightHistory.get(closestFlight.callsign);
     const firstSeen = historyEntry?.firstSeen || closestFlight.timestamp || new Date().toISOString();
@@ -172,6 +214,13 @@ function exportWebData(flightJustLeft = false) {
  * Update flight tracking data
  */
 function trackFlight(flight) {
+  // Fix bad callsigns using registration if available
+  const bestCallsign = getBestCallsign(flight);
+  if (bestCallsign !== flight.callsign) {
+    console.log(`📝 Fixed callsign: ${flight.callsign || '(empty)'} → ${bestCallsign}`);
+    flight.callsign = bestCallsign;
+  }
+  
   const existing = flightHistory.get(flight.callsign);
   const now = new Date().toISOString();
   
@@ -432,8 +481,8 @@ async function notifyFlight(flight, isCloseFlight = false) {
   // Extract departure and arrival airports
   const [departure, arrival] = route !== 'UNKNOWN' ? route.split('→') : ['?', '?'];
   
-  // Choose distance icon - animated 17777 for commercial, 72581 for private
-  const distanceIcon = flightType === 'private' ? 72581 : 17777;
+  // Choose distance icon - 'plane' (2933) for commercial, 72581 for private
+  const distanceIcon = flightType === 'private' ? 72581 : 'plane';
   
   // Build flight number display (airline code + aircraft type)
   const flightNumDisplay = `${airlineCode}${aircraftType}`;
@@ -449,14 +498,13 @@ async function notifyFlight(flight, isCloseFlight = false) {
     },
     {
       text: `${departure}-${arrival}`,  // "SEA-PDX" - Route
-      icon: 'plane',                    // Airplane icon
       color: '#FFFFFF',                 // White for route
       duration: dur,
       scroll: false
     },
     {
       text: flightNumDisplay,    // "ASB738" - Airline code + Aircraft type
-      icon: 'plane',             // Airplane icon
+      icon: distanceIcon,        // Same icon as screen 1: 72581 (private) or 17777 (commercial)
       color: '#FFD700',          // Gold for flight number
       duration: dur,
       scroll: false
@@ -502,7 +550,8 @@ async function run() {
     process.exit(1);
   }
   console.log(`✅ AWTRIX connected (${health.ip})`);
-  console.log('⏰ Native time app will auto-disable when flights detected\n');
+  console.log('🌑 Disabling native apps (User preference: permanent off)\n');
+  await awtrix.disableNativeApps();
 
   while (isRunning) {
     try {
@@ -521,9 +570,9 @@ async function run() {
           lastFlightCallsign = null;
           // Record when we last saw a flight
           lastFlightSeen = new Date().toISOString();
-          // Re-enable native time app when no flights
-          await awtrix.enableNativeApps();
-          console.log('⏰ Native time app restored');
+          // Ensure native apps stay off (User preference: permanent off)
+          await awtrix.disableNativeApps(); 
+          console.log('🌑 Zone clear (Display kept dark)');
         }
 
         await sleep(CONFIG.pollIntervalSec * 1000);
@@ -549,25 +598,34 @@ async function run() {
       // Update last flight seen time
       lastFlightSeen = new Date().toISOString();
       
-      // Show flight if NEW, or re-show same flight to keep it visible
+      // Only show close flights (≤1.5 NM), skip regular flights
+      if (!isCloseFlight) {
+        console.log(`[${new Date().toLocaleTimeString()}] Flight too far: ${closest.callsign} @ ${closest.distance?.toFixed(1)}NM (skip)`);
+        await sleep(CONFIG.pollIntervalSec * 1000);
+        continue;
+      }
+
+      // Show flight if NEW close flight detected
       if (closest.callsign !== lastFlightCallsign) {
-        console.log(`\n🆕 New flight detected! ${isCloseFlight ? '(Close flight - 3 cycles)' : ''}`);
+        console.log(`\n🆕 New close flight detected! (3 cycles)`);
         // Disable native time app for flight display
         await awtrix.disableTimeApp();
-        await notifyFlight(closest, isCloseFlight);
+        await notifyFlight(closest, true); // Always close flight here
         lastFlightCallsign = closest.callsign;
         lastNotifiedCallsign = closest.callsign;
         // Reset path tracking for new flight
         activeFlightPath = [activeFlightPath[activeFlightPath.length - 1]].filter(Boolean);
+        // Initialize remaining cycles (notifyFlight does first 3, so set to 0)
+        cyclesRemaining = 0;
       } else {
-        // Same flight still overhead - check if we need to cycle again for close flights
-        const shouldNotify = !isCloseFlight || cyclesRemaining > 0;
-        if (isCloseFlight && cyclesRemaining > 0) {
+        // Same close flight still overhead - check if we need to cycle again
+        const shouldNotify = cyclesRemaining > 0;
+        if (cyclesRemaining > 0) {
           cyclesRemaining--;
         }
-        console.log(`[${new Date().toLocaleTimeString()}] Overhead: ${closest.callsign} @ ${closest.distance?.toFixed(1)}NM, ${activeFlightPath.length} path snaps ${isCloseFlight ? '(close)' : ''}`);
+        console.log(`[${new Date().toLocaleTimeString()}] Overhead: ${closest.callsign} @ ${closest.distance?.toFixed(1)}NM, ${activeFlightPath.length} path snaps`);
         if (shouldNotify) {
-          await notifyFlight(closest, isCloseFlight && cyclesRemaining >= 0);
+          await notifyFlight(closest, true);
         }
       }
 
