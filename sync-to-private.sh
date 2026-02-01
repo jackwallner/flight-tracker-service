@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRIVATE_REPO="$HOME/clawd/archive/skills/my-flights"
+PRIVATE_REPO="$HOME/my-flights"
 SERVICE_DIR="$SCRIPT_DIR"
 
 # Loop forever, syncing every 2 minutes
