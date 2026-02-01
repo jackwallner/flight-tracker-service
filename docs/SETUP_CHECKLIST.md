@@ -29,6 +29,7 @@ Follow this checklist to get your flight tracker running.
   - [ ] Set `TRACKER_LON` (find on Google Maps)
   - [ ] Adjust `TRACKER_RADIUS_NM` if needed (default: 1.5)
 - [ ] Set `AWTRIX_IP` if using AWTRIX clock
+  - [ ] Upload required icons (see [AWTRIX_ICONS.md](./AWTRIX_ICONS.md))
 
 ---
 

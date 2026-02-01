@@ -133,6 +133,7 @@ tail -f ~/flight-tracker-service/tracker.error.log
 1. Ensure your AWTRIX clock is on the same network
 2. Find its IP in your router's admin panel
 3. Test: `curl http://YOUR_AWTRIX_IP/api/stats`
+4. **Upload required icons** - See [docs/AWTRIX_ICONS.md](./docs/AWTRIX_ICONS.md) for setup instructions
 
 ## File Structure
 
@@ -276,6 +277,7 @@ The sync loop runs every 2 minutes. Check:
 
 - Verify AWTRIX_IP is correct
 - Test connectivity: `curl http://YOUR_AWTRIX_IP/api/stats`
+- **Check icons are uploaded** - See [docs/AWTRIX_ICONS.md](./docs/AWTRIX_ICONS.md)
 - Check AWTRIX MQTT settings if using MQTT mode
 
 ## Uninstall
