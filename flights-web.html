@@ -1999,13 +1999,17 @@
               };
               
               // Check if this flight is already in history (by callsign and firstSeen)
-              const exists = mergedHistory.some(f => 
+              const existingIndex = mergedHistory.findIndex(f => 
                 f.callsign === currentFlight.callsign && 
                 f.firstSeen === currentFlight.firstSeen
               );
               
-              if (!exists) {
+              if (existingIndex === -1) {
+                // New flight - add to top
                 mergedHistory.unshift(currentFlight);
+              } else {
+                // Existing flight - update with current data and mark as current
+                mergedHistory[existingIndex] = { ...mergedHistory[existingIndex], ...currentFlight };
               }
             }
             
