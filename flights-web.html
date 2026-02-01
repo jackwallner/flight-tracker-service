@@ -581,6 +581,38 @@
       background: var(--bg-hover);
     }
 
+    /* Current flight row highlighting */
+    tr.current-flight-row td {
+      background: rgba(59, 130, 246, 0.15);
+      border-left: 3px solid var(--accent);
+    }
+    
+    tr.current-flight-row:hover td {
+      background: rgba(59, 130, 246, 0.25);
+    }
+    
+    [data-theme="dark"] tr.current-flight-row td {
+      background: rgba(59, 130, 246, 0.2);
+    }
+    
+    [data-theme="dark"] tr.current-flight-row:hover td {
+      background: rgba(59, 130, 246, 0.3);
+    }
+
+    /* Current badge */
+    .current-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 6px;
+      background: var(--accent);
+      color: white;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+    }
+
     /* Flight Cell */
     .flight-cell {
       display: flex;
@@ -1844,12 +1876,13 @@
         const flightType = detectFlightType(f);
         const distance = f.closestDistance || f.distance || 0;
         const distClass = getDistanceClass(distance);
+        const isCurrent = f.isCurrent;
         
         const typeIcons = { commercial: '✈️', private: '🚁', cargo: '📦', unknown: '?' };
         const typeClasses = { commercial: 'commercial', private: 'private', cargo: 'cargo', unknown: 'unknown' };
         
         return `
-          <tr>
+          <tr class="${isCurrent ? 'current-flight-row' : ''}">
             <td>
               <div class="flight-cell">
                 <div class="flight-icon-small ${flightType === 'private' ? 'private' : flightType === 'cargo' ? 'cargo' : ''}">
@@ -1890,6 +1923,7 @@
               <span class="type-badge ${typeClasses[flightType]}">
                 ${flightType.charAt(0).toUpperCase() + flightType.slice(1)}
               </span>
+              ${isCurrent ? '<span class="current-badge">Current</span>' : ''}
             </td>
           </tr>
         `;
@@ -1946,7 +1980,36 @@
         if (historyResponse.ok) {
           const historyData = await historyResponse.json();
           if (Array.isArray(historyData)) {
-            flightHistory = historyData;
+            // Merge current flight into history if it's a valid completed flight
+            let mergedHistory = [...historyData];
+            if (data.status === 'completed' && data.flight && data.flight.callsign) {
+              const currentFlight = {
+                callsign: data.flight.callsign,
+                flightNumber: data.flight.flightNumber || null,
+                aircraftType: data.flight.aircraftType || null,
+                origin: data.flight.origin,
+                destination: data.flight.destination,
+                firstSeen: data.flight.firstSeen,
+                lastSeen: data.timestamp || new Date().toISOString(),
+                closestDistance: data.closestApproach?.distance,
+                closestAltitude: data.closestApproach?.altitude,
+                closestSpeed: data.closestApproach?.speed,
+                // Mark as current so we can highlight it
+                isCurrent: true
+              };
+              
+              // Check if this flight is already in history (by callsign and firstSeen)
+              const exists = mergedHistory.some(f => 
+                f.callsign === currentFlight.callsign && 
+                f.firstSeen === currentFlight.firstSeen
+              );
+              
+              if (!exists) {
+                mergedHistory.unshift(currentFlight);
+              }
+            }
+            
+            flightHistory = mergedHistory;
             updateStats();
             renderHistoryTable();
           }
