@@ -9,7 +9,8 @@
 
 - 🛩️ **Real-time tracking** - Polls FlightRadar24 API every 10 seconds
 - 📊 **Closest approach** - Calculates minimum distance for each flight
-- 📺 **AWTRIX display** - Shows flights on pixel clock with 5-screen rotation
+- 🔄 **Session-based tracking** - Creates new entry for each overhead pass (5-min buffer)
+- 📺 **AWTRIX display** - Shows flights on pixel clock with 3-screen rotation
 - 🌐 **Auto-publishes** - Syncs to GitHub Pages every 2 minutes
 - 💾 **Persistent history** - Saves all flights to JSON
 - 🗄️ **Aircraft database** - 520k aircraft records for type/registration lookup
@@ -178,17 +179,16 @@ flight-tracker-service/
                     └─────────────────────┘
 ```
 
-1. **Poll** FlightRadar24 every 10s for flights in radius
+1. **Poll** FlightRadar24 every 10s for flights within 1.5 NM radius
 2. **Lookup** aircraft details in 520k aircraft database
 3. **Track** closest approach for each flight while in zone
-4. **Notify** AWTRIX clock with 5-screen sequence for new flights:
-   - Screen 1: Airline code (colored by altitude)
-   - Screen 2: Distance (cyan)
-   - Screen 3: Aircraft type (colored by speed)
-   - Screen 4: Departure airport (gold)
-   - Screen 5: Arrival airport (green)
-5. **Export** `flights-web.json` when flights leave zone
-6. **Sync** to `my-flights/` repo for GitHub Pages
+4. **Session Tracking** - Creates separate entry for each overhead pass (5-min buffer prevents duplicates)
+5. **Notify** AWTRIX clock with 3-screen sequence for close flights (≤1.5 NM):
+   - Screen 1: Distance with icon (plane/helicopter)
+   - Screen 2: Route (Origin-Destination)
+   - Screen 3: Airline code + Aircraft type
+6. **Export** `flights-web.json` continuously (throttled 5s)
+7. **Sync** to `my-flights/` repo every 2 minutes for GitHub Pages
 
 ## GitHub Pages Sync
 
@@ -213,20 +213,23 @@ Or use `run.sh` which starts both the tracker and the sync loop.
 
 ## AWTRIX Display Sequence
 
-When a new flight enters your detection zone:
+When a new close flight (≤1.5 NM) is detected, cycles 3 times:
 
-| Screen | Duration | Content | Color |
-|--------|----------|---------|-------|
-| 1 | 4 sec | Airline (e.g., "ASA") | Altitude-based |
-| 2 | 4 sec | Distance (e.g., "2.3NM") | Cyan |
-| 3 | 4 sec | Aircraft type (e.g., "737") | Speed-based |
-| 4 | 4 sec | Origin (e.g., "SEA") | Gold |
-| 5 | 4 sec | Destination (e.g., "LAX") | Green |
+| Screen | Duration | Content | Icon | Color |
+|--------|----------|---------|------|-------|
+| 1 | 5 sec | Distance (e.g., "1.2") | ✈️/🚁 | Cyan |
+| 2 | 5 sec | Route (e.g., "SEA-LAX") | - | White |
+| 3 | 5 sec | Airline + Type (e.g., "ASB738") | ✈️/🚁 | Gold |
+
+Icons:
+- ✈️ **Plane** - Commercial flights
+- 🚁 **Helicopter** - Private/N-number flights
 
 Colors indicate:
-- 🟢 Green: Low altitude (< 10,000 ft)
-- 🟡 Yellow: Medium altitude (10,000 - 30,000 ft)
-- 🔵 Cyan: High altitude (> 30,000 ft)
+- 🟠 Orange: Low altitude (< 5,000 ft)
+- 🟡 Gold: Medium altitude (5,000 - 15,000 ft)
+- 🔵 Cyan: Climbing/descending (15,000 - 30,000 ft)
+- 🟣 Purple: Cruising altitude (> 30,000 ft)
 
 ## Management Commands
 
@@ -252,6 +255,18 @@ tail -f ~/flight-tracker-service/tracker.error.log
 cd ~/flight-tracker-service
 node tracker.mjs
 ```
+
+## Session-Based Tracking
+
+The tracker uses **session-based tracking** to ensure each overhead pass is recorded separately:
+
+- **Session Key**: `callsign_YYYY-MM-DDTHH` (hour-level grouping)
+- **Buffer Window**: 5 minutes
+- Same flight passing 10 minutes later = **separate entry**
+- Same flight tomorrow = **new entry** (not updating yesterday's)
+- Private planes doing circuits = **each pass tracked separately**
+
+This prevents the old behavior where ASA123 on Monday would overwrite ASA123's data from Sunday.
 
 ## Troubleshooting
 
