@@ -941,7 +941,7 @@
         <div>
           <h1>Overhead Flight Tracker</h1>
           <div class="location-badge">
-            📍 Vancouver, WA — 1.5NM Detection Zone
+            📍 Your Location — 0.70NM Detection Zone
           </div>
         </div>
       </div>
@@ -1434,7 +1434,7 @@
     
     function getAirportCoord(code, type) {
       if (!code) {
-        return type === 'lat' ? 45.625 : -122.528;
+        return type === 'lat' ? 40.749 : -73.985;
       }
       
       const upperCode = code.toUpperCase();
@@ -1453,7 +1453,7 @@
       fetchAirportData(code);
       
       // Return default for now
-      return type === 'lat' ? 45.625 : -122.528;
+      return type === 'lat' ? 40.749 : -73.985;
     }
     
     function getAirportName(code) {
@@ -1667,7 +1667,7 @@
       }
       
       // Home location
-      const home = { lat: 45.625, lon: -122.528 };
+      const home = { lat: 40.749, lon: -73.985 };
       
       // Clean up old map
       if (currentMap) {

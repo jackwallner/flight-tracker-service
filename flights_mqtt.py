@@ -17,8 +17,8 @@ from datetime import datetime
 AWTRIX_IP = "192.168.5.56"  # Ulanzi TC001 clock
 AWTRIX_URL = f"http://{AWTRIX_IP}/api/notify"
 
-# Vancouver, WA coordinates (Jack's home)
-LAT, LON = 45.625280431872, -122.52811167430798
+# Your coordinates (default: Empire State Building)
+LAT, LON = 40.748817, -73.985428
 RANGE_DEGREES = 0.5  # ~50km
 CLOSE_THRESHOLD_NM = 2.0  # Only show flights within 2 nautical miles
 MAX_CYCLES = 5  # Cycle 5 times then exit
@@ -346,7 +346,7 @@ def cycle_flight_display(flight):
 def main():
     global last_flight, last_flight_time
 
-    print(f"Starting HTTP Flight Tracker - Monitoring near Vancouver, WA ({LAT}, {LON})")
+    print(f"Starting HTTP Flight Tracker - Monitoring at ({LAT}, {LON})")
     print(f"AWTRIX URL: {AWTRIX_URL}")
     print(f"Threshold: Only shows flights within {CLOSE_THRESHOLD_NM} NM")
     print(f"Cycles {MAX_CYCLES} times when close flight detected")

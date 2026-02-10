@@ -2,11 +2,12 @@
   "name": "flight-tracker-service",
   "version": "1.0.0",
   "description": "Mac-based flight tracker service that displays nearby flights on AWTRIX clock and publishes to GitHub Pages",
-  "main": "tracker.mjs",
+  "main": "tracker-v2.mjs",
   "type": "module",
   "scripts": {
-    "start": "node tracker.mjs",
-    "dev": "node tracker.mjs",
+    "start": "node tracker-v2.mjs",
+    "dev": "node tracker-v2.mjs",
+    "test:awtrix": "node test-awtrix-app.mjs",
     "sync": "./sync-to-pages.sh",
     "enrich": "node enrich-history.mjs"
   },

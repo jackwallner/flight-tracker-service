@@ -410,6 +410,35 @@ export async function setBrightness(brightness) {
 }
 
 /**
+ * Send custom app update (in-place, no blanking)
+ * Uses /api/custom?name={name} endpoint
+ */
+export async function sendApp(name, payload) {
+  try {
+    const res = await fetch(`http://${CLOCK_IP}/api/custom?name=${name}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    }
+
+    return { success: true, status: res.status };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Clear a custom app by sending empty payload
+ */
+export async function clearApp(name) {
+  return sendApp(name, {});
+}
+
+/**
  * Enable native apps
  */
 export async function enableNativeApps() {

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 /**
- * Flight Tracker - AWTRIX Channel Integration
- * Event-driven: only notifies when NEW flights detected
- * Uses ulanzi-clock channel API for proper clawdbot integration
+ * Flight Tracker v2 - AWTRIX Custom App
+ *
+ * Uses /api/custom?name=flight for smooth in-place updates (no blanking).
+ * 3-screen rotation with visual effects: proximity colors, progress bars,
+ * gradients, rainbow text, and push icons.
+ *
+ * Run: node tracker-v2.mjs
+ * Revert: node tracker.mjs (original unchanged)
  */
 
 import { fetchFR24Flights } from './api-fr24.mjs';
@@ -14,56 +19,50 @@ import path from 'path';
 const CONFIG = {
   lat: parseFloat(process.env.TRACKER_LAT) || 40.748817,   // Default: Empire State Building
   lon: parseFloat(process.env.TRACKER_LON) || -73.985428,
-  radiusNm: parseFloat(process.env.TRACKER_RADIUS_NM) || 1.5,   // 1.5NM detection zone
+  radiusNm: parseFloat(process.env.TRACKER_RADIUS_NM) || 0.70,   // Tightened from 1.5NM
   pollIntervalSec: parseInt(process.env.POLL_INTERVAL) || 10,
-  displayDuration: 5,  // Seconds per info screen
+  screenDurationMs: 4000,    // 4 seconds per screen
   flightsLogPath: process.env.FLIGHTS_LOG_PATH || './flights.json',
-  webExportPath: process.env.WEB_EXPORT_PATH || './flights-web.json'
+  webExportPath: process.env.WEB_EXPORT_PATH || './flights-web.json',
+  appName: 'flight'          // AWTRIX custom app name
 };
 
 let lastFlightCallsign = null;
 let isRunning = true;
-let flightHistory = new Map(); // Track flights with their closest approach
-let activeFlightPath = []; // Track path snapshots for current flight in zone
-let lastWebExport = 0; // Throttle web exports
-let cyclesRemaining = 0; // Track cycles for close flights
-let lastNotifiedCallsign = null; // Track last flight we notified
-let lastFlightSeen = null; // Timestamp when we last saw any flight
+let flightHistory = new Map();
+let activeFlightPath = [];
+let lastWebExport = 0;
+let lastFlightSeen = null;
+let screenRotationTimer = null;
+let currentScreenIndex = 0;
+let latestFlightData = null;  // Latest formatted flight data for screen rotation
 
-/**
- * Get best callsign - use registration if callsign is invalid
- * This handles FR24 data errors where callsign is missing/wrong
- */
+// ============================================================================
+// Flight data helpers (same logic as tracker.mjs)
+// ============================================================================
+
 function getBestCallsign(flight) {
   const callsign = flight.callsign?.trim().toUpperCase();
   const registration = flight.registration?.trim().toUpperCase();
   const aircraftType = flight.aircraftType?.trim().toUpperCase();
-  
-  // Valid callsign checks
+
   const isValid = (cs) => {
     if (!cs || cs.length < 3) return false;
     if (!/^[A-Z]/.test(cs)) return false;
     if (/^\d+$/.test(cs)) return false;
-    // Reject if matches aircraft type
     if (aircraftType && cs === aircraftType) return false;
-    // Reject known aircraft types
     const badTypes = ['PC12', 'DA42', 'DA62', 'PA28', 'PA32', 'C172', 'C182', 'C206', 'C210', 'C310', 'C414', 'C421', 'BE36', 'BE58', 'BE20', 'SR20', 'SR22', 'C25A', 'C25B', 'C56X', 'E50P', 'E55P', 'FA50', 'G100', 'G200', 'TBM7', 'TBM8', 'TBM9'];
     if (badTypes.includes(cs)) return false;
     return true;
   };
-  
-  // Use registration if available and valid
+
   const isValidReg = (reg) => reg && /^N[0-9A-Z]+$/.test(reg);
-  
-  // Priority: valid callsign > valid registration > original callsign
+
   if (isValid(callsign)) return callsign;
   if (isValidReg(registration)) return registration;
   return callsign || registration || 'UNKNOWN';
 }
 
-/**
- * Load existing flight history from file
- */
 function loadFlightHistory() {
   try {
     if (fs.existsSync(CONFIG.flightsLogPath)) {
@@ -76,9 +75,6 @@ function loadFlightHistory() {
   }
 }
 
-/**
- * Save flight history to file
- */
 function saveFlightHistory() {
   try {
     const data = Array.from(flightHistory.values());
@@ -88,22 +84,15 @@ function saveFlightHistory() {
   }
 }
 
-/**
- * Export web-friendly JSON for website display
- * Includes closest approach data with precision indicator
- */
 function exportWebData(flightJustLeft = false) {
   const now = Date.now();
-  // Throttle exports to every 5 seconds unless flight just left zone
   if (!flightJustLeft && now - lastWebExport < 5000) return;
   lastWebExport = now;
 
   try {
-    // Find the flight with closest approach in current session
     let closestFlight = null;
     let minDistance = Infinity;
-    
-    // Check active path first (high precision)
+
     if (activeFlightPath.length > 0) {
       for (const snapshot of activeFlightPath) {
         if (snapshot.distance < minDistance) {
@@ -112,8 +101,7 @@ function exportWebData(flightJustLeft = false) {
         }
       }
     }
-    
-    // Fallback to flight history if no active path
+
     if (!closestFlight && flightHistory.size > 0) {
       for (const f of flightHistory.values()) {
         if (f.closestDistance < minDistance) {
@@ -121,7 +109,7 @@ function exportWebData(flightJustLeft = false) {
           closestFlight = {
             distance: f.closestDistance,
             altitude: f.closestAltitude,
-            lat: CONFIG.lat, // approximated
+            lat: CONFIG.lat,
             lon: CONFIG.lon,
             timestamp: f.lastSeen,
             callsign: f.callsign,
@@ -134,7 +122,6 @@ function exportWebData(flightJustLeft = false) {
     }
 
     if (!closestFlight) {
-      // No flight data yet - write empty state
       fs.writeFileSync(CONFIG.webExportPath, JSON.stringify({
         status: 'waiting',
         message: 'No flights detected yet',
@@ -143,42 +130,32 @@ function exportWebData(flightJustLeft = false) {
       return;
     }
 
-    // Calculate overhead score (0 = directly overhead)
     const overheadScore = closestFlight.distance;
-    const isOverhead = overheadScore < 1.0; // Within 1NM is "overhead"
-
-    // Determine precision based on data source
-    const precision = activeFlightPath.length >= 3 ? 'high' : 
+    const isOverhead = overheadScore < 1.0;
+    const precision = activeFlightPath.length >= 3 ? 'high' :
                       activeFlightPath.length > 0 ? 'tracked' : 'estimated';
-
-    // Get speed from closest snapshot if available
     const closestSnapshot = activeFlightPath.find(s => s.distance === closestFlight.distance);
     const speed = closestSnapshot?.speed || closestFlight.speed || 0;
-    
-    // Get best aircraft type info - enriched > path > raw
-    const aircraftType = closestSnapshot?.aircraftName || 
-                         closestSnapshot?.aircraftType || 
-                         closestFlight.aircraftType || 
+    const aircraftType = closestSnapshot?.aircraftName ||
+                         closestSnapshot?.aircraftType ||
+                         closestFlight.aircraftType ||
                          closestFlight.type || null;
-    
-    // Fix bad callsigns using registration if available
+
     const bestCallsign = getBestCallsign({
       callsign: closestFlight.callsign,
       registration: closestFlight.registration,
       aircraftType: aircraftType
     });
     if (bestCallsign !== closestFlight.callsign) {
-      console.log(`📝 Fixed web export callsign: ${closestFlight.callsign || '(empty)'} → ${bestCallsign}`);
       closestFlight.callsign = bestCallsign;
     }
-    
-    // Get firstSeen time for takeoff display
+
     const historyEntry = flightHistory.get(closestFlight.callsign);
     const firstSeen = historyEntry?.firstSeen || closestFlight.timestamp || new Date().toISOString();
-    
+
     const webData = {
       closestApproach: {
-        distance: Math.round(closestFlight.distance * 100) / 100, // 2 decimal places
+        distance: Math.round(closestFlight.distance * 100) / 100,
         altitude: Math.round(closestFlight.altitude),
         speed: Math.round(speed),
         timestamp: closestFlight.timestamp || new Date().toISOString(),
@@ -201,7 +178,7 @@ function exportWebData(flightJustLeft = false) {
     };
 
     fs.writeFileSync(CONFIG.webExportPath, JSON.stringify(webData, null, 2));
-    
+
     if (flightJustLeft) {
       console.log(`🌐 Web export: closest approach ${webData.closestApproach.distance}NM @ ${webData.closestApproach.altitude}ft (${precision})`);
     }
@@ -210,22 +187,17 @@ function exportWebData(flightJustLeft = false) {
   }
 }
 
-/**
- * Update flight tracking data
- */
 function trackFlight(flight) {
-  // Fix bad callsigns using registration if available
   const bestCallsign = getBestCallsign(flight);
   if (bestCallsign !== flight.callsign) {
     console.log(`📝 Fixed callsign: ${flight.callsign || '(empty)'} → ${bestCallsign}`);
     flight.callsign = bestCallsign;
   }
-  
+
   const existing = flightHistory.get(flight.callsign);
   const now = new Date().toISOString();
-  
+
   if (existing) {
-    // Update existing flight
     existing.lastSeen = now;
     existing.duration = Math.round((new Date(now) - new Date(existing.firstSeen)) / 1000);
     if (flight.distance < existing.closestDistance) {
@@ -233,7 +205,6 @@ function trackFlight(flight) {
       existing.closestAltitude = flight.altitude;
       existing.closestSpeed = flight.speed;
     }
-    // Update route info if we got it
     if (flight.origin && !existing.origin) existing.origin = flight.origin;
     if (flight.destination && !existing.destination) existing.destination = flight.destination;
     if (flight.flightNumber && !existing.flightNumber) existing.flightNumber = flight.flightNumber;
@@ -241,8 +212,6 @@ function trackFlight(flight) {
     if (flight.icao && !existing.icao) existing.icao = flight.icao;
     if (flight.registration && !existing.registration) existing.registration = flight.registration;
   } else {
-    // New flight - log it regardless of initial distance
-    // We'll track it as it approaches, even if first seen outside zone
     flightHistory.set(flight.callsign, {
       callsign: flight.callsign,
       flightNumber: flight.flightNumber || null,
@@ -264,17 +233,13 @@ function trackFlight(flight) {
     });
     console.log(`📝 Logged new flight: ${flight.callsign}`);
   }
-  
+
   saveFlightHistory();
 }
 
-/**
- * Record a path snapshot for detailed tracking
- */
 function recordPathSnapshot(flight) {
-  // Enrich with aircraft database
   const enriched = enrichFlight(flight);
-  
+
   const snapshot = {
     timestamp: new Date().toISOString(),
     callsign: flight.callsign,
@@ -292,62 +257,14 @@ function recordPathSnapshot(flight) {
     icao: flight.icao,
     registration: flight.registration
   };
-  
+
   activeFlightPath.push(snapshot);
-  
-  // Keep only last 100 snapshots to prevent memory bloat
+
   if (activeFlightPath.length > 100) {
     activeFlightPath.shift();
   }
 }
 
-/**
- * Get color based on altitude (meaningful color coding)
- */
-function getAltitudeColor(altitude) {
-  if (altitude == null) return '#FFFFFF';
-  if (altitude < 5000) return '#FF6B35';    // Orange - low/landing
-  if (altitude < 15000) return '#FFD700';   // Gold - mid-level
-  if (altitude < 30000) return '#00D9FF';   // Cyan - climbing/descending
-  return '#9D4EDD';                          // Purple - cruising altitude
-}
-
-/**
- * Get color based on speed (meaningful color coding)
- */
-function getSpeedColor(speed) {
-  if (speed == null) return '#FFFFFF';
-  if (speed < 200) return '#4CAF50';        // Green - slow/descending
-  if (speed < 350) return '#FFD700';        // Gold - normal
-  if (speed < 500) return '#FF9800';        // Orange - fast
-  return '#F44336';                          // Red - very fast
-}
-
-/**
- * Get color based on distance (proximity to house)
- */
-function getDistanceColor(distanceNm) {
-  if (distanceNm == null) return '#FFFFFF';
-  if (distanceNm < 0.5) return '#FF0000';   // Red - very close!
-  if (distanceNm < 1.0) return '#FF9800';   // Orange - close
-  if (distanceNm < 1.5) return '#FFD700';   // Gold - nearby
-  return '#00D9FF';                          // Cyan - farther
-}
-
-/**
- * Get altitude-based icon
- */
-function getAltitudeIcon(altitude) {
-  if (altitude == null) return 'plane';
-  if (altitude < 5000) return 'arrow_down';
-  if (altitude > 30000) return 'arrow_up';
-  return 'plane';
-}
-
-/**
- * Get aircraft type name from ICAO code
- * AWTRIX display is 32x8 pixels - keep names SHORT (2-4 chars max)
- */
 function getAircraftType(typeCode) {
   const types = {
     'A319': 'A319', 'A320': 'A320', 'A321': 'A321',
@@ -358,71 +275,35 @@ function getAircraftType(typeCode) {
     'E75L': 'E75L', 'CRJ7': 'CRJ7',
     'A20N': 'A20N', 'A21N': 'A21N',
     'BCS1': 'A220', 'BCS3': 'A223',
-    'PC12': 'PC12', 'C56X': 'C56X', 
+    'PC12': 'PC12', 'C56X': 'C56X',
     'GLF4': 'GLF4', 'GLF5': 'GLF5', 'GLF6': 'GLF6',
     'C680': 'C680', 'CL60': 'CL60', 'FA50': 'FA50',
     'E135': 'E135', 'E145': 'E145', 'E170': 'E170', 'E190': 'E190'
   };
-  // Return mapped code (4 chars max for AWTRIX), or first 4 of raw code, or '?'
   if (types[typeCode]) return types[typeCode];
   if (typeCode) return typeCode.substring(0, 4);
   return '?';
 }
 
-// Note: getAirlineCode and enrichFlight are imported from aircraft-db.mjs
-
-/**
- * Detect if flight is commercial airline or private/GA
- * Commercial: 3-letter airline code + numbers (ASA416, UAL123)
- * Private: N-number or other registration format
- */
 function detectFlightType(callsign, aircraftType) {
   if (!callsign) return 'unknown';
   const cs = callsign.toUpperCase();
-  
-  // GA aircraft types are always private
-  const gaTypes = ['C172', 'C182', 'C208', 'SR22', 'PC12', 'BE20', 'BE36', 'PA31', 'PA32', 
-                   'C56X', 'CL60', 'GLEX', 'GLF4', 'GLF5', 'GLF6', 'FA7X', 'FA8X', 
+
+  const gaTypes = ['C172', 'C182', 'C208', 'SR22', 'PC12', 'BE20', 'BE36', 'PA31', 'PA32',
+                   'C56X', 'CL60', 'GLEX', 'GLF4', 'GLF5', 'GLF6', 'FA7X', 'FA8X',
                    'C25A', 'C25B', 'C25C', 'C680', 'C700', 'C750'];
-  if (gaTypes.includes(aircraftType?.toUpperCase())) {
-    return 'private';
-  }
-  
-  // US N-numbers are private/GA
-  if (/^N[0-9]/.test(cs)) {
-    return 'private';
-  }
-  
-  // Canadian C- registrations
-  if (/^C-[FG]/.test(cs)) {
-    return 'private';
-  }
-  
-  // UK G- registrations
-  if (/^G-/.test(cs)) {
-    return 'private';
-  }
-  
-  // 3-letter airline prefix + numbers = commercial
-  if (/^[A-Z]{3}[0-9]/.test(cs)) {
-    return 'commercial';
-  }
-  
-  // 2-letter airline prefix + numbers = commercial
-  if (/^[A-Z]{2}[0-9]/.test(cs)) {
-    return 'commercial';
-  }
-  
+  if (gaTypes.includes(aircraftType?.toUpperCase())) return 'private';
+  if (/^N[0-9]/.test(cs)) return 'private';
+  if (/^C-[FG]/.test(cs)) return 'private';
+  if (/^G-/.test(cs)) return 'private';
+  if (/^[A-Z]{3}[0-9]/.test(cs)) return 'commercial';
+  if (/^[A-Z]{2}[0-9]/.test(cs)) return 'commercial';
   return 'unknown';
 }
 
-/**
- * Format flight notification
- */
 function formatFlight(flight) {
-  // Enrich with aircraft database
   const enriched = enrichFlight(flight);
-  
+
   const route = enriched.origin && enriched.destination
     ? `${enriched.origin}→${enriched.destination}`
     : 'UNKNOWN';
@@ -432,116 +313,162 @@ function formatFlight(flight) {
   const distNm = enriched.distance ? enriched.distance.toFixed(1) : '?';
   const altKft = enriched.altitude ? (enriched.altitude / 1000).toFixed(1) : '?';
   const speedKt = enriched.speed ? Math.round(enriched.speed) : '?';
-
-  // Use enriched aircraft type - prefer raw type code over name for AWTRIX brevity
   let aircraftType = enriched.aircraftType || '?';
-  
-  // Detect commercial vs private
   const flightType = detectFlightType(enriched.callsign, enriched.aircraftType);
 
   return {
     airlineCode: airlineCodeRaw,
     distNm,
-    flightType,  // 'commercial', 'private', or 'unknown'
+    distanceRaw: enriched.distance || 0,
+    flightType,
     route,
     altKft,
     speedKt,
     aircraftType,
-    enriched  // Pass through for logging/debugging
+    enriched
   };
 }
 
+// ============================================================================
+// Proximity color + progress helpers
+// ============================================================================
+
 /**
- * Format time in Pacific Time (PT)
+ * Get color based on proximity (for v2 enhanced display)
+ * Returns hex string for AWTRIX
  */
-function formatPTTime(date) {
-  return new Date(date).toLocaleTimeString('en-US', {
-    timeZone: 'America/Los_Angeles',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }) + ' PT';
+function getProximityColor(distanceNm) {
+  const r = CONFIG.radiusNm;
+  if (distanceNm < r * 0.43) return '#FF0000';    // Red - very close
+  if (distanceNm < r * 0.71) return '#FFA500';    // Orange - close
+  return '#00D9FF';                                 // Cyan - in zone
 }
 
 /**
- * Send flight notification to AWTRIX
- * 3-screen sequence: DIST → DEP-ARR → Flight Number
- * Cycles 3 times if flight is within 1.5NM radius
+ * Get proximity color as RGB array for progress bar
  */
-async function notifyFlight(flight, isCloseFlight = false) {
-  const { airlineCode, distNm, flightType, route, altKft, speedKt, aircraftType } = formatFlight(flight);
+function getProximityColorRGB(distanceNm) {
+  const r = CONFIG.radiusNm;
+  if (distanceNm < r * 0.43) return [255, 0, 0];
+  if (distanceNm < r * 0.71) return [255, 165, 0];
+  return [0, 217, 255];
+}
 
-  const typeIcon = flightType === 'private' ? '🚁' : flightType === 'commercial' ? '✈️' : '✈️';
-  console.log(`${typeIcon} ${distNm} | ${route} | ${airlineCode} ${aircraftType}`);
+/**
+ * Calculate progress bar value from distance
+ * radiusNm → 0%, 0NM → 100%
+ */
+function getProximityProgress(distanceNm) {
+  const clamped = Math.max(0, Math.min(CONFIG.radiusNm, distanceNm));
+  return Math.round((1 - clamped / CONFIG.radiusNm) * 100);
+}
 
-  const dur = CONFIG.displayDuration;
+// ============================================================================
+// Screen builders (3 screens with visual effects)
+// ============================================================================
 
-  // Extract departure and arrival airports
-  const [departure, arrival] = route !== 'UNKNOWN' ? route.split('→') : ['?', '?'];
-  
-  // Choose distance icon - 'plane' for commercial, 'helicopter' for private
-  const distanceIcon = flightType === 'private' ? 'helicopter' : 'plane';
-  
-  // Build flight number display (airline code + aircraft type)
-  const flightNumDisplay = `${airlineCode}${aircraftType}`;
-  
-  // 3-screen sequence: DIST → DEP-ARR → Flight Number
-  const screens = [
-    {
-      text: distNm,              // "1.2" - Distance (no NM, always implied)
-      icon: distanceIcon,        // Animated 17777 (commercial) or 72581 (private)
-      color: '#00D9FF',          // Cyan for distance
-      duration: dur,
-      scroll: false
-    },
-    {
-      text: `${departure}-${arrival}`,  // "SEA-PDX" - Route
-      color: '#FFFFFF',                 // White for route
-      duration: dur,
-      scroll: false
-    },
-    {
-      text: flightNumDisplay,    // "ASB738" - Airline code + Aircraft type
-      icon: distanceIcon,        // Same icon as screen 1: 72581 (private) or 17777 (commercial)
-      color: '#FFD700',          // Gold for flight number
-      duration: dur,
-      scroll: false
-    }
-  ];
+function buildScreen1_Distance(data) {
+  const icon = data.flightType === 'private' ? 'helicopter' : 'plane';
+  return {
+    text: data.distNm,
+    icon: icon,
+    pushIcon: 2,                                    // Icon bounces in
+    color: getProximityColor(data.distanceRaw),
+    progress: getProximityProgress(data.distanceRaw),
+    progressC: getProximityColorRGB(data.distanceRaw),
+    progressBC: [30, 30, 30],
+    noScroll: true,
+    lifetime: 30
+  };
+}
 
-  // Determine number of cycles: 3 for close flights (< 1.5NM), 1 otherwise
-  const cycles = isCloseFlight ? 3 : 1;
-  
-  // Send screens for each cycle
-  for (let cycle = 0; cycle < cycles; cycle++) {
-    if (cycle > 0) {
-      console.log(`  ↻ Cycle ${cycle + 1}/3 for close flight`);
-    }
-    for (const screen of screens) {
-      await awtrix.send(screen);
-      await new Promise(r => setTimeout(r, dur * 1000));
-    }
+function buildScreen2_Route(data) {
+  const [departure, arrival] = data.route !== 'UNKNOWN'
+    ? data.route.split('→')
+    : ['?', '?'];
+  return {
+    text: `${departure}-${arrival}`,
+    pushIcon: 1,                                     // Icon slides with text
+    gradient: ['#00D9FF', '#FFD700'],                // Cyan-to-gold gradient
+    noScroll: true,
+    lifetime: 30
+  };
+}
+
+function buildScreen3_FlightID(data) {
+  const icon = data.flightType === 'private' ? 'helicopter' : 'plane';
+  const isCommercial = data.flightType === 'commercial';
+  return {
+    text: `${data.airlineCode}${data.aircraftType}`,
+    icon: icon,
+    pushIcon: 2,                                     // Icon bounces in
+    ...(isCommercial ? { rainbow: true } : { color: '#FFD700' }),
+    noScroll: true,
+    lifetime: 30
+  };
+}
+
+// ============================================================================
+// Screen rotation engine
+// ============================================================================
+
+function startScreenRotation(data) {
+  // Store latest data so rotation always uses fresh info
+  latestFlightData = data;
+  currentScreenIndex = 0;
+
+  // If already rotating, just update data — timer continues
+  if (screenRotationTimer) return;
+
+  // Send first screen immediately
+  sendCurrentScreen();
+
+  // Rotate every 4 seconds
+  screenRotationTimer = setInterval(() => {
+    currentScreenIndex = (currentScreenIndex + 1) % 3;
+    sendCurrentScreen();
+  }, CONFIG.screenDurationMs);
+}
+
+async function sendCurrentScreen() {
+  if (!latestFlightData) return;
+
+  const builders = [buildScreen1_Distance, buildScreen2_Route, buildScreen3_FlightID];
+  const payload = builders[currentScreenIndex](latestFlightData);
+
+  const result = await awtrix.sendApp(CONFIG.appName, payload);
+  if (!result.success) {
+    console.error(`  ⚠️ Screen ${currentScreenIndex + 1} send failed: ${result.error}`);
   }
 }
 
-/**
- * Main tracker loop
- */
+async function stopScreenRotation() {
+  if (screenRotationTimer) {
+    clearInterval(screenRotationTimer);
+    screenRotationTimer = null;
+  }
+  latestFlightData = null;
+  currentScreenIndex = 0;
+  await awtrix.clearApp(CONFIG.appName);
+}
+
+// ============================================================================
+// Main loop
+// ============================================================================
+
 async function run() {
-  console.log('🛩️  Flight Tracker Starting...');
+  console.log('🛩️  Flight Tracker v2 Starting...');
   console.log(`📍 Location: ${CONFIG.lat}, ${CONFIG.lon}`);
-  console.log(`📡 Radius: ${CONFIG.radiusNm}NM`);
+  console.log(`📡 Radius: ${CONFIG.radiusNm}NM (tightened)`);
   console.log(`⏱️  Poll: every ${CONFIG.pollIntervalSec}s`);
+  console.log(`🖥️  Mode: Custom app (smooth transitions)`);
   console.log(`📝 Log: ${CONFIG.flightsLogPath}\n`);
 
-  // Load flight history
   loadFlightHistory();
-  
-  // Load aircraft DB stats (triggers lazy load)
+
   const dbStats = getDBStats();
   console.log(`📚 Aircraft DB: ${dbStats.totalAircraft.toLocaleString()} aircraft`);
 
-  // Check AWTRIX health
   const health = await awtrix.health();
   if (health.status !== 'online') {
     console.error('❌ AWTRIX offline');
@@ -558,18 +485,16 @@ async function run() {
       if (flights.length === 0) {
         console.log(`[${new Date().toLocaleTimeString()}] No flights`);
 
-        // Clear last flight - zone is empty now
         if (lastFlightCallsign) {
           console.log(`✈️  ${lastFlightCallsign} left the zone\n`);
-          // Export final data with completion status
           exportWebData(true);
-          // Clear path for next flight
           activeFlightPath = [];
           lastFlightCallsign = null;
-          // Record when we last saw a flight
           lastFlightSeen = new Date().toISOString();
-          // Ensure native apps stay off (User preference: permanent off)
-          await awtrix.disableNativeApps(); 
+
+          // Stop rotation and clear display
+          await stopScreenRotation();
+          await awtrix.disableNativeApps();
           console.log('🌑 Zone clear (Display kept dark)');
         }
 
@@ -581,51 +506,45 @@ async function run() {
       flights.sort((a, b) => (a.distance || 999) - (b.distance || 999));
       const closest = flights[0];
 
-      // Track this flight (update history)
       trackFlight(closest);
-      
-      // Record path snapshot for web export
       recordPathSnapshot(closest);
-      
-      // Export web data (throttled internally)
       exportWebData(false);
 
-      // Check if flight is within 1.5NM radius (close flight = 3 cycles)
-      const isCloseFlight = closest.distance <= 1.5;
-      
-      // Update last flight seen time
+      const isCloseFlight = closest.distance <= CONFIG.radiusNm;
       lastFlightSeen = new Date().toISOString();
-      
-      // Only show close flights (≤1.5 NM), skip regular flights
+
       if (!isCloseFlight) {
-        console.log(`[${new Date().toLocaleTimeString()}] Flight too far: ${closest.callsign} @ ${closest.distance?.toFixed(1)}NM (skip)`);
+        console.log(`[${new Date().toLocaleTimeString()}] Flight too far: ${closest.callsign} @ ${closest.distance?.toFixed(2)}NM (skip, need ≤${CONFIG.radiusNm})`);
+
+        // If we were tracking a flight that moved out of range
+        if (lastFlightCallsign) {
+          console.log(`✈️  ${lastFlightCallsign} left the tight zone\n`);
+          exportWebData(true);
+          activeFlightPath = [];
+          lastFlightCallsign = null;
+          await stopScreenRotation();
+          await awtrix.disableNativeApps();
+          console.log('🌑 Zone clear (Display kept dark)');
+        }
+
         await sleep(CONFIG.pollIntervalSec * 1000);
         continue;
       }
 
-      // Show flight if NEW close flight detected
+      // Close flight detected — format and start/update rotation
+      const data = formatFlight(closest);
+      const typeIcon = data.flightType === 'private' ? '🚁' : '✈️';
+
       if (closest.callsign !== lastFlightCallsign) {
-        console.log(`\n🆕 New close flight detected! (3 cycles)`);
-        // Disable native time app for flight display
-        await awtrix.disableTimeApp();
-        await notifyFlight(closest, true); // Always close flight here
+        console.log(`\n🆕 New close flight! ${typeIcon} ${data.distNm}NM | ${data.route} | ${data.airlineCode}${data.aircraftType}`);
         lastFlightCallsign = closest.callsign;
-        lastNotifiedCallsign = closest.callsign;
-        // Reset path tracking for new flight
         activeFlightPath = [activeFlightPath[activeFlightPath.length - 1]].filter(Boolean);
-        // Initialize remaining cycles (notifyFlight does first 3, so set to 0)
-        cyclesRemaining = 0;
       } else {
-        // Same close flight still overhead - check if we need to cycle again
-        const shouldNotify = cyclesRemaining > 0;
-        if (cyclesRemaining > 0) {
-          cyclesRemaining--;
-        }
-        console.log(`[${new Date().toLocaleTimeString()}] Overhead: ${closest.callsign} @ ${closest.distance?.toFixed(1)}NM, ${activeFlightPath.length} path snaps`);
-        if (shouldNotify) {
-          await notifyFlight(closest, true);
-        }
+        console.log(`[${new Date().toLocaleTimeString()}] Overhead: ${closest.callsign} @ ${closest.distance?.toFixed(2)}NM, ${activeFlightPath.length} snaps`);
       }
+
+      // Start or update screen rotation with latest data
+      startScreenRotation(data);
 
     } catch (err) {
       console.error(`Error: ${err.message}`);
@@ -640,15 +559,15 @@ function sleep(ms) {
 }
 
 async function shutdown() {
-  console.log('\n🛑 Stopping flight tracker...');
+  console.log('\n🛑 Stopping flight tracker v2...');
   isRunning = false;
+  await stopScreenRotation();
   setTimeout(() => process.exit(0), 1000);
 }
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Start
 run().catch(err => {
   console.error('Fatal:', err);
   process.exit(1);

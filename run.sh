@@ -37,9 +37,9 @@ if [ -z "$TRACKER_LAT" ] || [ -z "$TRACKER_LON" ]; then
     echo -e "${YELLOW}⚠️  Configuration needed${NC}"
     echo ""
     echo "Set environment variables:"
-    echo "  export TRACKER_LAT=45.625280431872    # Your latitude"
-    echo "  export TRACKER_LON=-122.52811167430798 # Your longitude"
-    echo "  export TRACKER_RADIUS_NM=1.5           # Detection radius (optional)"
+    echo "  export TRACKER_LAT=40.748817             # Your latitude"
+    echo "  export TRACKER_LON=-73.985428            # Your longitude"
+    echo "  export TRACKER_RADIUS_NM=0.70            # Detection radius (optional)"
     echo "  export AWTRIX_IP=192.168.5.56          # AWTRIX clock IP (optional)"
     echo ""
     echo "Or create a .env file with these values."
@@ -56,11 +56,11 @@ if [ -z "$TRACKER_LAT" ] || [ -z "$TRACKER_LON" ]; then
 # Copy this to .env and update with your values
 
 # Required: Your coordinates (find on Google Maps)
-TRACKER_LAT=45.625280431872
-TRACKER_LON=-122.52811167430798
+TRACKER_LAT=40.748817
+TRACKER_LON=-73.985428
 
 # Optional: Detection radius in nautical miles (default: 1.5)
-TRACKER_RADIUS_NM=1.5
+TRACKER_RADIUS_NM=0.70
 
 # Optional: AWTRIX clock IP (default: 192.168.5.56)
 AWTRIX_IP=192.168.5.56
@@ -81,7 +81,7 @@ fi
 
 echo -e "${GREEN}✓ Configuration valid${NC}"
 echo "  Location: $TRACKER_LAT, $TRACKER_LON"
-echo "  Radius: ${TRACKER_RADIUS_NM:-1.5} NM"
+echo "  Radius: ${TRACKER_RADIUS_NM:-0.70} NM"
 echo "  AWTRIX: ${AWTRIX_IP:-192.168.5.56}"
 echo ""
 
@@ -105,7 +105,7 @@ if [ -n "$GITHUB_REPO" ]; then
     
     # Start tracker in background
     echo -e "${BLUE}Starting tracker service...${NC}"
-    node tracker.mjs &
+    node tracker-v2.mjs &
     TRACKER_PID=$!
     
     # Wait a moment for tracker to start
@@ -144,5 +144,5 @@ else
     echo "  Press Ctrl+C to stop"
     echo ""
     
-    node tracker.mjs
+    node tracker-v2.mjs
 fi
